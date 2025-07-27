@@ -28,6 +28,9 @@ Health check endpoint to verify service availability.
 ### PTR (Reverse DNS) Lookup
 /api/lookup?domain=8.8.8.8&resolver=google
 
+### Demo Page
+[DNS Lookup API Web Page](https://dns.zumbo.net/)  
+[DNS Lookup API JSON Result](https://dns.zumbo.net/api/lookup?domain=example.com&resolver=cloudflare)  
 
 ---
 
