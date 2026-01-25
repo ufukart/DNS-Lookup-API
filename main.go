@@ -4,18 +4,62 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"golang.org/x/time/rate"
 )
+
+// --- PROMETHEUS METRICS ---
+var (
+	requestDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "dns_api_request_duration_seconds",
+			Help:    "Time taken to process DNS API requests",
+			Buckets: []float64{0.01, 0.05, 0.1, 0.5, 1, 2, 5},
+		},
+		[]string{"status", "resolver"},
+	)
+
+	dnsQueryDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "dns_query_duration_seconds",
+			Help:    "Time taken for upstream DNS queries",
+			Buckets: []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2},
+		},
+		[]string{"rtype", "resolver", "transport"},
+	)
+
+	dnsRequestTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "dns_api_requests_total",
+			Help: "Total number of DNS API requests",
+		},
+		[]string{"status"},
+	)
+
+	activeGoroutines = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "dns_api_active_workers",
+			Help: "Number of currently active DNS lookup workers",
+		},
+	)
+)
+
+func init() {
+	prometheus.MustRegister(requestDuration, dnsQueryDuration, dnsRequestTotal, activeGoroutines)
+}
 
 type NSRecord struct {
 	Host string `json:"host"`
@@ -100,125 +144,128 @@ type DNSRecord struct {
 }
 
 type Config struct {
-	Timeout        time.Duration
-	LookupTimeout  time.Duration
-	MaxConcurrency int
-	Port           string
-	RateLimit      rate.Limit
-	RateLimitBurst int
-	ReadTimeout    time.Duration
-	WriteTimeout   time.Duration
-	IdleTimeout    time.Duration
+	Port             string
+	ReadTimeout      time.Duration
+	WriteTimeout     time.Duration
+	IdleTimeout      time.Duration
+	GlobalTimeout    time.Duration
+	DNSLookupTimeout time.Duration
+	MaxGlobalConcur  int
+	RateLimit        rate.Limit
+	RateLimitBurst   int
+	TrustedProxies   []string
 }
 
 type DNSChecker struct {
-	config   Config
-	limiters map[string]*rate.Limiter
-	mu       sync.RWMutex
-	client   *dns.Client
+	config    Config
+	limiters  sync.Map
+	globalSem chan struct{}
 }
+
+// --- CONFIG & SETUP ---
 
 func loadConfig() Config {
-	config := Config{
-		Timeout:        5 * time.Second,
-		LookupTimeout:  3 * time.Second,
-		MaxConcurrency: 10,
-		Port:           "3000",
-		RateLimit:      rate.Every(time.Second),
-		RateLimitBurst: 10,
-		ReadTimeout:    10 * time.Second,
-		WriteTimeout:   10 * time.Second,
-		IdleTimeout:    30 * time.Second,
+	cfg := Config{
+		Port:             getEnv("PORT", "3000"),
+		ReadTimeout:      10 * time.Second,
+		WriteTimeout:     10 * time.Second,
+		IdleTimeout:      30 * time.Second,
+		GlobalTimeout:    6 * time.Second,
+		DNSLookupTimeout: 2 * time.Second,
+		MaxGlobalConcur:  1000,
+		RateLimit:        rate.Every(time.Second / 5),
+		RateLimitBurst:   10,
 	}
 
-	if timeout := os.Getenv("DNS_TIMEOUT"); timeout != "" {
-		if parsed, err := time.ParseDuration(timeout); err == nil {
-			config.Timeout = parsed
-		}
+	if proxies := getEnv("TRUSTED_PROXIES", ""); proxies != "" {
+		cfg.TrustedProxies = strings.Split(proxies, ",")
 	}
-
-	if lookupTimeout := os.Getenv("DNS_LOOKUP_TIMEOUT"); lookupTimeout != "" {
-		if parsed, err := time.ParseDuration(lookupTimeout); err == nil {
-			config.LookupTimeout = parsed
-		}
-	}
-
-	if maxConcurrency := os.Getenv("DNS_MAX_CONCURRENCY"); maxConcurrency != "" {
-		if parsed, err := strconv.Atoi(maxConcurrency); err == nil && parsed > 0 {
-			config.MaxConcurrency = parsed
-		}
-	}
-
-	if port := os.Getenv("PORT"); port != "" {
-		config.Port = port
-	}
-
-	if rateLimit := os.Getenv("RATE_LIMIT"); rateLimit != "" {
-		if parsed, err := strconv.Atoi(rateLimit); err == nil && parsed > 0 {
-			config.RateLimit = rate.Every(time.Second / time.Duration(parsed))
-		}
-	}
-
-	if rateLimitBurst := os.Getenv("RATE_LIMIT_BURST"); rateLimitBurst != "" {
-		if parsed, err := strconv.Atoi(rateLimitBurst); err == nil && parsed > 0 {
-			config.RateLimitBurst = parsed
-		}
-	}
-
-	return config
+	return cfg
 }
 
-func NewDNSChecker() *DNSChecker {
-	config := loadConfig()
+func getEnv(key, fallback string) string {
+	if value, exists := os.LookupEnv(key); exists {
+		return value
+	}
+	return fallback
+}
 
+func NewDNSChecker(cfg Config) *DNSChecker {
 	return &DNSChecker{
-		config:   config,
-		limiters: make(map[string]*rate.Limiter),
-		client: &dns.Client{
-			Timeout: config.LookupTimeout,
-		},
+		config:    cfg,
+		globalSem: make(chan struct{}, cfg.MaxGlobalConcur),
 	}
 }
 
-func (dc *DNSChecker) getRateLimiter(ip string) *rate.Limiter {
-	dc.mu.RLock()
-	limiter, exists := dc.limiters[ip]
-	dc.mu.RUnlock()
+// --- RATE LIMITER & IP LOGIC ---
 
-	if !exists {
-		dc.mu.Lock()
-		limiter, exists = dc.limiters[ip]
-		if !exists {
-			limiter = rate.NewLimiter(dc.config.RateLimit, dc.config.RateLimitBurst)
-			dc.limiters[ip] = limiter
-		}
-		dc.mu.Unlock()
+type clientLimiter struct {
+	limiter  *rate.Limiter
+	lastSeen time.Time
+}
+
+func (dc *DNSChecker) getLimiter(ip string) *rate.Limiter {
+	now := time.Now()
+	val, exists := dc.limiters.Load(ip)
+	if exists {
+		cl := val.(*clientLimiter)
+		cl.lastSeen = now
+		return cl.limiter
 	}
-
+	limiter := rate.NewLimiter(dc.config.RateLimit, dc.config.RateLimitBurst)
+	dc.limiters.Store(ip, &clientLimiter{limiter: limiter, lastSeen: now})
 	return limiter
 }
 
+func (dc *DNSChecker) cleanupLimiters(ctx context.Context) {
+	ticker := time.NewTicker(1 * time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			dc.limiters.Range(func(key, value any) bool {
+				cl := value.(*clientLimiter)
+				if time.Since(cl.lastSeen) > 1*time.Hour {
+					dc.limiters.Delete(key)
+				}
+				return true
+			})
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
 func (dc *DNSChecker) getClientIP(r *http.Request) string {
-	// Check for X-Real-IP header (used by reverse proxies)
-	if ip := r.Header.Get("X-Real-IP"); ip != "" {
-		return ip
+	remoteIP, _, _ := net.SplitHostPort(r.RemoteAddr)
+	if remoteIP == "" {
+		remoteIP = r.RemoteAddr
 	}
 
-	// Check for X-Forwarded-For header (used by load balancers)
-	if ip := r.Header.Get("X-Forwarded-For"); ip != "" {
-		// X-Forwarded-For can contain multiple IPs, get the first one
-		if ips := strings.Split(ip, ","); len(ips) > 0 {
-			return strings.TrimSpace(ips[0])
+	if len(dc.config.TrustedProxies) == 0 {
+		return remoteIP
+	}
+
+	isTrusted := false
+	for _, proxy := range dc.config.TrustedProxies {
+		if proxy == remoteIP {
+			isTrusted = true
+			break
 		}
 	}
 
-	// Fallback to RemoteAddr
-	ip, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
+	if isTrusted {
+		if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
+			return strings.TrimSpace(strings.Split(forwarded, ",")[0])
+		}
+		if realIP := r.Header.Get("X-Real-IP"); realIP != "" {
+			return realIP
+		}
 	}
-	return ip
+	return remoteIP
 }
+
+// --- DNS CORE LOGIC ---
 
 func (dc *DNSChecker) getResolverIP(resolver string) string {
 	switch resolver {
@@ -235,101 +282,61 @@ func (dc *DNSChecker) getResolverIP(resolver string) string {
 	}
 }
 
-func (dc *DNSChecker) createResolver(resolver string) *net.Resolver {
-	resolverIP := dc.getResolverIP(resolver)
-
-	return &net.Resolver{
-		PreferGo: true,
-		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-			d := net.Dialer{Timeout: dc.config.LookupTimeout}
-			return d.DialContext(ctx, "udp", resolverIP+":53")
-		},
-	}
-}
-
-func isValidResolver(resolver string) bool {
-	switch resolver {
-	case "google", "cloudflare", "opendns", "quad9":
-		return true
-	default:
-		return false
-	}
-}
-
-func isValidDomain(domain string) bool {
-	if len(domain) == 0 || len(domain) > 253 {
-		return false
+func (dc *DNSChecker) robustQuery(ctx context.Context, domain string, qtype uint16, resolverIP string) ([]dns.RR, error) {
+	select {
+	case dc.globalSem <- struct{}{}:
+		activeGoroutines.Inc()
+		defer func() {
+			<-dc.globalSem
+			activeGoroutines.Dec()
+		}()
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 
-	// Remove trailing dot if present
-	domain = strings.TrimSuffix(domain, ".")
-
-	// Check for valid characters and format
-	domainRegex := regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$`)
-	return domainRegex.MatchString(domain)
-}
-
-func isValidIP(ip string) bool {
-	return net.ParseIP(ip) != nil
-}
-
-func sanitizeDomain(domain string) string {
-	// Remove leading/trailing whitespace
-	domain = strings.TrimSpace(domain)
-	// Convert to lowercase
-	domain = strings.ToLower(domain)
-	// Remove trailing dot if present
-	domain = strings.TrimSuffix(domain, ".")
-	return domain
-}
-
-func reverseIP(ip string) string {
-	parsedIP := net.ParseIP(ip)
-	if parsedIP == nil {
-		return ""
-	}
-
-	if ipv4 := parsedIP.To4(); ipv4 != nil {
-		// IPv4 reverse lookup
-		return fmt.Sprintf("%d.%d.%d.%d.in-addr.arpa", ipv4[3], ipv4[2], ipv4[1], ipv4[0])
-	}
-
-	// IPv6 reverse lookup
-	ipv6 := parsedIP.To16()
-	var reversed []string
-	for i := len(ipv6) - 1; i >= 0; i-- {
-		reversed = append(reversed, fmt.Sprintf("%x", ipv6[i]&0xf))
-		reversed = append(reversed, fmt.Sprintf("%x", ipv6[i]>>4))
-	}
-	return strings.Join(reversed, ".") + ".ip6.arpa"
-}
-
-func (dc *DNSChecker) queryDNS(domain string, qtype uint16, resolver string) (*dns.Msg, error) {
-	resolverIP := dc.getResolverIP(resolver)
-
+	c := new(dns.Client)
+	c.Timeout = dc.config.DNSLookupTimeout
 	msg := new(dns.Msg)
 	msg.SetQuestion(dns.Fqdn(domain), qtype)
 	msg.SetEdns0(4096, true)
 
-	response, _, err := dc.client.Exchange(msg, resolverIP+":53")
+	start := time.Now()
+	transport := "udp"
+	resp, _, err := c.ExchangeContext(ctx, msg, resolverIP+":53")
+
+	if err == nil && resp != nil && resp.Truncated {
+		c.Net = "tcp"
+		transport = "tcp"
+		resp, _, err = c.ExchangeContext(ctx, msg, resolverIP+":53")
+	}
+
+	duration := time.Since(start).Seconds()
+	dnsQueryDuration.WithLabelValues(dns.TypeToString[qtype], resolverIP, transport).Observe(duration)
+
 	if err != nil {
 		return nil, err
 	}
-
-	if response.Rcode != dns.RcodeSuccess {
-		return nil, fmt.Errorf("DNS query failed with rcode: %d", response.Rcode)
-	}
-
-	return response, nil
+	return resp.Answer, nil
 }
 
-func (dc *DNSChecker) lookupWithFallback(ctx context.Context, domain string, resolver string) DNSRecord {
+func (dc *DNSChecker) quickHostLookup(ctx context.Context, host string, resolverIP string) string {
+	rrs, err := dc.robustQuery(ctx, host, dns.TypeA, resolverIP)
+	if err == nil {
+		for _, rr := range rrs {
+			if a, ok := rr.(*dns.A); ok {
+				return a.A.String()
+			}
+		}
+	}
+	return ""
+}
+
+func (dc *DNSChecker) Lookup(ctx context.Context, domain string, resolverName string) DNSRecord {
 	startTime := time.Now()
-	ctx, cancel := context.WithTimeout(ctx, dc.config.Timeout)
+	ctx, cancel := context.WithTimeout(ctx, dc.config.GlobalTimeout)
 	defer cancel()
 
-	resolverInstance := dc.createResolver(resolver)
-	resolverIP := dc.getResolverIP(resolver)
+	resolverIP := dc.getResolverIP(resolverName)
 
 	result := DNSRecord{
 		Domain:    domain,
@@ -338,420 +345,299 @@ func (dc *DNSChecker) lookupWithFallback(ctx context.Context, domain string, res
 		Errors:    []string{},
 	}
 
-	var wg sync.WaitGroup
 	var mu sync.Mutex
-	sem := make(chan struct{}, dc.config.MaxConcurrency)
+	var wg sync.WaitGroup
 
-	addError := func(errMsg string) {
+	isIP := net.ParseIP(domain) != nil
+
+	addError := func(err string) {
 		mu.Lock()
-		result.Errors = append(result.Errors, errMsg)
+		result.Errors = append(result.Errors, err)
 		mu.Unlock()
 	}
 
-	// Check if input is an IP address for PTR lookup
-	isIPAddress := isValidIP(domain)
-
-	lookupFuncs := []func(){}
-
-	if isIPAddress {
-		// PTR lookup for IP addresses
-		lookupFuncs = append(lookupFuncs, func() {
+	if isIP {
+		// --- PTR LOOKUP ---
+		wg.Add(1)
+		go func() {
 			defer wg.Done()
-			reverseDomain := reverseIP(domain)
-			if reverseDomain == "" {
-				addError("Invalid IP address for PTR lookup")
+			reverse, err := dns.ReverseAddr(domain)
+			if err != nil {
+				addError("Invalid IP for PTR")
 				return
 			}
+			rrs, err := dc.robustQuery(ctx, reverse, dns.TypePTR, resolverIP)
+			if err != nil {
+				addError(fmt.Sprintf("PTR lookup failed: %v", err))
+				return
+			}
+			mu.Lock()
+			for _, rr := range rrs {
+				if ptr, ok := rr.(*dns.PTR); ok {
+					result.PTR = append(result.PTR, PTRRecord{
+						Value: strings.TrimSuffix(ptr.Ptr, "."),
+						TTL:   ptr.Hdr.Ttl,
+					})
+				}
+			}
+			mu.Unlock()
+		}()
+	} else {
+		// --- DOMAIN LOOKUPS ---
 
-			if response, err := dc.queryDNS(reverseDomain, dns.TypePTR, resolver); err == nil {
+		// 1. A Records
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if rrs, err := dc.robustQuery(ctx, domain, dns.TypeA, resolverIP); err == nil {
 				mu.Lock()
-				for _, rr := range response.Answer {
-					if ptr, ok := rr.(*dns.PTR); ok {
-						result.PTR = append(result.PTR, PTRRecord{
-							Value: strings.TrimSuffix(ptr.Ptr, "."),
-							TTL:   ptr.Hdr.Ttl,
-						})
+				for _, rr := range rrs {
+					if a, ok := rr.(*dns.A); ok {
+						result.A = append(result.A, ARecord{IP: a.A.String(), TTL: a.Hdr.Ttl})
 					}
 				}
 				mu.Unlock()
-			} else {
-				// Fallback to standard library
-				if names, err := resolverInstance.LookupAddr(ctx, domain); err == nil {
-					mu.Lock()
-					for _, name := range names {
-						result.PTR = append(result.PTR, PTRRecord{
-							Value: strings.TrimSuffix(name, "."),
-						})
-					}
-					mu.Unlock()
-				} else {
-					addError(fmt.Sprintf("PTR lookup failed: %v", err))
-				}
 			}
-		})
-	} else {
-		// Regular domain lookups
-		lookupFuncs = []func(){
-			// A and AAAA records
-			func() {
-				defer wg.Done()
-				if response, err := dc.queryDNS(domain, dns.TypeA, resolver); err == nil {
-					mu.Lock()
-					for _, rr := range response.Answer {
-						if a, ok := rr.(*dns.A); ok {
-							result.A = append(result.A, ARecord{
-								IP:  a.A.String(),
-								TTL: a.Hdr.Ttl,
-							})
-						}
-					}
-					mu.Unlock()
-				} else {
-					// Fallback to standard library
-					if ips, err := resolverInstance.LookupIPAddr(ctx, domain); err == nil {
-						mu.Lock()
-						for _, ip := range ips {
-							if ip.IP.To4() != nil {
-								result.A = append(result.A, ARecord{IP: ip.IP.String()})
-							}
-						}
-						mu.Unlock()
-					} else {
-						addError(fmt.Sprintf("A record lookup failed: %v", err))
-					}
-				}
+		}()
 
-				if response, err := dc.queryDNS(domain, dns.TypeAAAA, resolver); err == nil {
-					mu.Lock()
-					for _, rr := range response.Answer {
-						if aaaa, ok := rr.(*dns.AAAA); ok {
-							result.AAAA = append(result.AAAA, AAAARecord{
-								IP:  aaaa.AAAA.String(),
-								TTL: aaaa.Hdr.Ttl,
-							})
-						}
-					}
-					mu.Unlock()
-				} else {
-					// Fallback to standard library
-					if ips, err := resolverInstance.LookupIPAddr(ctx, domain); err == nil {
-						mu.Lock()
-						for _, ip := range ips {
-							if ip.IP.To4() == nil {
-								result.AAAA = append(result.AAAA, AAAARecord{IP: ip.IP.String()})
-							}
-						}
-						mu.Unlock()
-					} else {
-						addError(fmt.Sprintf("AAAA record lookup failed: %v", err))
+		// 2. AAAA Records
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if rrs, err := dc.robustQuery(ctx, domain, dns.TypeAAAA, resolverIP); err == nil {
+				mu.Lock()
+				for _, rr := range rrs {
+					if aaaa, ok := rr.(*dns.AAAA); ok {
+						result.AAAA = append(result.AAAA, AAAARecord{IP: aaaa.AAAA.String(), TTL: aaaa.Hdr.Ttl})
 					}
 				}
-			},
+				mu.Unlock()
+			}
+		}()
 
-			// CNAME records
-			func() {
-				defer wg.Done()
-				if response, err := dc.queryDNS(domain, dns.TypeCNAME, resolver); err == nil {
-					mu.Lock()
-					for _, rr := range response.Answer {
-						if cname, ok := rr.(*dns.CNAME); ok {
-							result.CNAME = &CNAMERecord{
-								Target: strings.TrimSuffix(cname.Target, "."),
-								TTL:    cname.Hdr.Ttl,
-							}
-							break
-						}
-					}
-					mu.Unlock()
-				} else {
-					// Fallback to standard library
-					if cname, err := resolverInstance.LookupCNAME(ctx, domain); err == nil && cname != domain+"." {
-						mu.Lock()
-						result.CNAME = &CNAMERecord{
-							Target: strings.TrimSuffix(cname, "."),
-						}
-						mu.Unlock()
-					} else if err != nil {
-						addError(fmt.Sprintf("CNAME lookup failed: %v", err))
-					}
-				}
-			},
+		// 3. NS Records
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if rrs, err := dc.robustQuery(ctx, domain, dns.TypeNS, resolverIP); err == nil {
+				var nsList []NSRecord
+				var nsWg sync.WaitGroup
+				var nsMu sync.Mutex
 
-			// NS records
-			func() {
-				defer wg.Done()
-				if response, err := dc.queryDNS(domain, dns.TypeNS, resolver); err == nil {
-					mu.Lock()
-					for _, rr := range response.Answer {
-						if ns, ok := rr.(*dns.NS); ok {
-							nsHost := strings.TrimSuffix(ns.Ns, ".")
-							ipAddrs, _ := resolverInstance.LookupHost(ctx, nsHost)
-							ip := ""
-							if len(ipAddrs) > 0 {
-								ip = ipAddrs[0]
-							}
-							result.NS = append(result.NS, NSRecord{
-								Host: nsHost,
-								IP:   ip,
-								TTL:  ns.Hdr.Ttl,
-							})
-						}
-					}
-					mu.Unlock()
-				} else {
-					// Fallback to standard library
-					if ns, err := resolverInstance.LookupNS(ctx, domain); err == nil {
-						mu.Lock()
-						for _, n := range ns {
-							ipAddrs, _ := resolverInstance.LookupHost(ctx, n.Host)
-							ip := ""
-							if len(ipAddrs) > 0 {
-								ip = ipAddrs[0]
-							}
-							result.NS = append(result.NS, NSRecord{Host: n.Host, IP: ip})
-						}
-						mu.Unlock()
-					} else {
-						addError(fmt.Sprintf("NS lookup failed: %v", err))
+				for _, rr := range rrs {
+					if ns, ok := rr.(*dns.NS); ok {
+						nsHost := strings.TrimSuffix(ns.Ns, ".")
+						nsWg.Add(1)
+						go func(host string, ttl uint32) {
+							defer nsWg.Done()
+							ip := dc.quickHostLookup(ctx, host, resolverIP)
+							nsMu.Lock()
+							nsList = append(nsList, NSRecord{Host: host, IP: ip, TTL: ttl})
+							nsMu.Unlock()
+						}(nsHost, ns.Hdr.Ttl)
 					}
 				}
-			},
+				nsWg.Wait()
+				mu.Lock()
+				result.NS = append(result.NS, nsList...)
+				mu.Unlock()
+			}
+		}()
 
-			// MX records
-			func() {
-				defer wg.Done()
-				if response, err := dc.queryDNS(domain, dns.TypeMX, resolver); err == nil {
-					mu.Lock()
-					for _, rr := range response.Answer {
-						if mx, ok := rr.(*dns.MX); ok {
-							mxHost := strings.TrimSuffix(mx.Mx, ".")
-							ipAddrs, _ := resolverInstance.LookupHost(ctx, mxHost)
-							ip := ""
-							if len(ipAddrs) > 0 {
-								ip = ipAddrs[0]
-							}
-							result.MX = append(result.MX, MXRecord{
-								Host: mxHost,
-								Pref: mx.Preference,
-								IP:   ip,
-								TTL:  mx.Hdr.Ttl,
-							})
-						}
-					}
-					mu.Unlock()
-				} else {
-					// Fallback to standard library
-					if mx, err := resolverInstance.LookupMX(ctx, domain); err == nil {
-						mu.Lock()
-						for _, m := range mx {
-							ipAddrs, _ := resolverInstance.LookupHost(ctx, m.Host)
-							ip := ""
-							if len(ipAddrs) > 0 {
-								ip = ipAddrs[0]
-							}
-							result.MX = append(result.MX, MXRecord{Host: m.Host, Pref: m.Pref, IP: ip})
-						}
-						mu.Unlock()
-					} else {
-						addError(fmt.Sprintf("MX lookup failed: %v", err))
-					}
-				}
-			},
+		// 4. MX Records
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if rrs, err := dc.robustQuery(ctx, domain, dns.TypeMX, resolverIP); err == nil {
+				var mxList []MXRecord
+				var mxWg sync.WaitGroup
+				var mxMu sync.Mutex
 
-			// TXT records
-			func() {
-				defer wg.Done()
-				if response, err := dc.queryDNS(domain, dns.TypeTXT, resolver); err == nil {
-					mu.Lock()
-					for _, rr := range response.Answer {
-						if txt, ok := rr.(*dns.TXT); ok {
-							result.TXT = append(result.TXT, TXTRecord{
-								Value: strings.Join(txt.Txt, ""),
-								TTL:   txt.Hdr.Ttl,
-							})
-						}
-					}
-					mu.Unlock()
-				} else {
-					// Fallback to standard library
-					if txt, err := resolverInstance.LookupTXT(ctx, domain); err == nil {
-						mu.Lock()
-						for _, t := range txt {
-							result.TXT = append(result.TXT, TXTRecord{Value: t})
-						}
-						mu.Unlock()
-					} else {
-						addError(fmt.Sprintf("TXT lookup failed: %v", err))
+				for _, rr := range rrs {
+					if mx, ok := rr.(*dns.MX); ok {
+						mxHost := strings.TrimSuffix(mx.Mx, ".")
+						mxWg.Add(1)
+						go func(host string, pref uint16, ttl uint32) {
+							defer mxWg.Done()
+							ip := dc.quickHostLookup(ctx, host, resolverIP)
+							mxMu.Lock()
+							mxList = append(mxList, MXRecord{Host: host, Pref: pref, IP: ip, TTL: ttl})
+							mxMu.Unlock()
+						}(mxHost, mx.Preference, mx.Hdr.Ttl)
 					}
 				}
-			},
+				mxWg.Wait()
+				mu.Lock()
+				result.MX = append(result.MX, mxList...)
+				mu.Unlock()
+			}
+		}()
 
-			// SOA records
-			func() {
-				defer wg.Done()
-				if response, err := dc.queryDNS(domain, dns.TypeSOA, resolver); err == nil {
-					mu.Lock()
-					for _, rr := range response.Answer {
-						if soa, ok := rr.(*dns.SOA); ok {
-							result.SOA = &SOARecord{
-								NS:      strings.TrimSuffix(soa.Ns, "."),
-								Mbox:    strings.TrimSuffix(soa.Mbox, "."),
-								Serial:  soa.Serial,
-								Refresh: soa.Refresh,
-								Retry:   soa.Retry,
-								Expire:  soa.Expire,
-								Minttl:  soa.Minttl,
-								TTL:     soa.Hdr.Ttl,
-							}
-							break
-						}
-					}
-					mu.Unlock()
-				} else {
-					addError(fmt.Sprintf("SOA lookup failed: %v", err))
-				}
-			},
+		// 5. TXT, CNAME, SOA, SRV, CAA
+		wg.Add(5)
 
-			// SRV records
-			func() {
-				defer wg.Done()
-				if response, err := dc.queryDNS(domain, dns.TypeSRV, resolver); err == nil {
-					mu.Lock()
-					for _, rr := range response.Answer {
-						if srv, ok := rr.(*dns.SRV); ok {
-							result.SRV = append(result.SRV, SRVRecord{
-								Target:   strings.TrimSuffix(srv.Target, "."),
-								Port:     srv.Port,
-								Priority: srv.Priority,
-								Weight:   srv.Weight,
-								TTL:      srv.Hdr.Ttl,
-							})
-						}
-					}
-					mu.Unlock()
-				} else {
-					addError(fmt.Sprintf("SRV lookup failed: %v", err))
-				}
-			},
-
-			// CAA records
-			func() {
-				defer wg.Done()
-				if response, err := dc.queryDNS(domain, dns.TypeCAA, resolver); err == nil {
-					mu.Lock()
-					for _, rr := range response.Answer {
-						if caa, ok := rr.(*dns.CAA); ok {
-							result.CAA = append(result.CAA, CAARecord{
-								Tag:   caa.Tag,
-								Value: caa.Value,
-								Flags: caa.Flag,
-								TTL:   caa.Hdr.Ttl,
-							})
-						}
-					}
-					mu.Unlock()
-				} else {
-					addError(fmt.Sprintf("CAA lookup failed: %v", err))
-				}
-			},
-		}
+		go func() { defer wg.Done(); simpleQuery[dns.TXT](dc, ctx, domain, resolverIP, &result, &mu) }()
+		go func() { defer wg.Done(); simpleQuery[dns.CNAME](dc, ctx, domain, resolverIP, &result, &mu) }()
+		go func() { defer wg.Done(); simpleQuery[dns.SOA](dc, ctx, domain, resolverIP, &result, &mu) }()
+		go func() { defer wg.Done(); simpleQuery[dns.SRV](dc, ctx, domain, resolverIP, &result, &mu) }()
+		go func() { defer wg.Done(); simpleQuery[dns.CAA](dc, ctx, domain, resolverIP, &result, &mu) }()
 	}
 
-	wg.Add(len(lookupFuncs))
-	for _, f := range lookupFuncs {
-		sem <- struct{}{}
-		go func(f func()) {
-			defer func() { <-sem }()
-			f()
-		}(f)
-	}
 	wg.Wait()
-	close(sem)
-
 	result.LookupTime = time.Since(startTime).Milliseconds()
 	return result
 }
 
-func (dc *DNSChecker) Lookup(ctx context.Context, domain string, resolver string) DNSRecord {
-	return dc.lookupWithFallback(ctx, domain, resolver)
+func simpleQuery[T any](dc *DNSChecker, ctx context.Context, domain, resolverIP string, result *DNSRecord, mu *sync.Mutex) {
+	var qtype uint16
+	switch any(new(T)).(type) {
+	case *dns.TXT:
+		qtype = dns.TypeTXT
+	case *dns.CNAME:
+		qtype = dns.TypeCNAME
+	case *dns.SOA:
+		qtype = dns.TypeSOA
+	case *dns.SRV:
+		qtype = dns.TypeSRV
+	case *dns.CAA:
+		qtype = dns.TypeCAA
+	}
+
+	rrs, err := dc.robustQuery(ctx, domain, qtype, resolverIP)
+	if err != nil {
+		return
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	for _, rr := range rrs {
+		switch v := rr.(type) {
+		case *dns.TXT:
+			result.TXT = append(result.TXT, TXTRecord{Value: strings.Join(v.Txt, ""), TTL: v.Hdr.Ttl})
+		case *dns.CNAME:
+			result.CNAME = &CNAMERecord{Target: strings.TrimSuffix(v.Target, "."), TTL: v.Hdr.Ttl}
+		case *dns.SOA:
+			result.SOA = &SOARecord{
+				NS: strings.TrimSuffix(v.Ns, "."), Mbox: strings.TrimSuffix(v.Mbox, "."),
+				Serial: v.Serial, Refresh: v.Refresh, Retry: v.Retry, Expire: v.Expire, Minttl: v.Minttl, TTL: v.Hdr.Ttl,
+			}
+		case *dns.SRV:
+			result.SRV = append(result.SRV, SRVRecord{
+				Target: strings.TrimSuffix(v.Target, "."), Port: v.Port,
+				Priority: v.Priority, Weight: v.Weight, TTL: v.Hdr.Ttl,
+			})
+		case *dns.CAA:
+			result.CAA = append(result.CAA, CAARecord{Tag: v.Tag, Value: v.Value, Flags: v.Flag, TTL: v.Hdr.Ttl})
+		}
+	}
 }
 
-func (dc *DNSChecker) rateLimitMiddleware(next http.HandlerFunc) http.HandlerFunc {
+// --- UTILS ---
+
+func sanitizeDomain(domain string) string {
+	domain = strings.TrimSpace(domain)
+	domain = strings.ToLower(domain)
+	return strings.TrimSuffix(domain, ".")
+}
+
+func isValidDomain(domain string) bool {
+	if len(domain) == 0 || len(domain) > 253 {
+		return false
+	}
+	domainRegex := regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$`)
+	return domainRegex.MatchString(domain)
+}
+
+// --- HANDLERS ---
+
+func (dc *DNSChecker) handleLookup(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
+	if r.Method == "OPTIONS" {
+		return
+	}
+
+	domain := r.URL.Query().Get("domain")
+	if domain == "" {
+		http.Error(w, `{"error":"domain required"}`, http.StatusBadRequest)
+		return
+	}
+	domain = sanitizeDomain(domain)
+
+	if !isValidDomain(domain) && net.ParseIP(domain) == nil {
+		http.Error(w, `{"error":"invalid domain or ip"}`, http.StatusBadRequest)
+		return
+	}
+
+	resolver := r.URL.Query().Get("resolver")
+	if resolver == "" {
+		resolver = "cloudflare"
+	}
+
+	result := dc.Lookup(r.Context(), domain, resolver)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
+}
+
+func (dc *DNSChecker) middleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		clientIP := dc.getClientIP(r)
-		limiter := dc.getRateLimiter(clientIP)
+		start := time.Now()
+
+		ip := dc.getClientIP(r)
+		limiter := dc.getLimiter(ip)
 
 		if !limiter.Allow() {
-			respondWithError(w, "Rate limit exceeded", http.StatusTooManyRequests)
+			dnsRequestTotal.WithLabelValues("rate_limited").Inc()
+			http.Error(w, `{"error":"rate limit exceeded"}`, http.StatusTooManyRequests)
 			return
 		}
-		next.ServeHTTP(w, r)
+
+		rw := &responseWriter{ResponseWriter: w, statusCode: 200}
+		next(rw, r)
+
+		duration := time.Since(start).Seconds()
+		requestDuration.WithLabelValues(fmt.Sprintf("%d", rw.statusCode), r.URL.Query().Get("resolver")).Observe(duration)
+		dnsRequestTotal.WithLabelValues(fmt.Sprintf("%d", rw.statusCode)).Inc()
+
+		slog.Info("Request", "ip", ip, "status", rw.statusCode, "dur", duration, "path", r.URL.Path)
 	}
 }
 
-func apiHandler(dc *DNSChecker) http.HandlerFunc {
-	return dc.rateLimitMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		domain := r.URL.Query().Get("domain")
-		if domain == "" {
-			respondWithError(w, "domain parameter is required", http.StatusBadRequest)
-			return
-		}
-
-		// Sanitize domain
-		domain = sanitizeDomain(domain)
-
-		// Validate domain or IP
-		if !isValidDomain(domain) && !isValidIP(domain) {
-			respondWithError(w, "invalid domain or IP address format", http.StatusBadRequest)
-			return
-		}
-
-		resolver := r.URL.Query().Get("resolver")
-		if resolver == "" {
-			resolver = "cloudflare"
-		} else if !isValidResolver(resolver) {
-			respondWithError(w, "invalid resolver specified. Valid options: google, cloudflare, opendns, quad9", http.StatusBadRequest)
-			return
-		}
-
-		result := dc.Lookup(r.Context(), domain, resolver)
-
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-
-		if err := json.NewEncoder(w).Encode(result); err != nil {
-			respondWithError(w, "failed to encode response", http.StatusInternalServerError)
-			return
-		}
-	})
+type responseWriter struct {
+	http.ResponseWriter
+	statusCode int
 }
 
-func healthHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	health := map[string]interface{}{
-		"status":    "healthy",
-		"timestamp": time.Now().UTC().Format(time.RFC3339),
-		"uptime":    time.Since(startTime).String(),
-	}
-	json.NewEncoder(w).Encode(health)
+func (rw *responseWriter) WriteHeader(code int) {
+	rw.statusCode = code
+	rw.ResponseWriter.WriteHeader(code)
 }
 
-func respondWithError(w http.ResponseWriter, message string, statusCode int) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	json.NewEncoder(w).Encode(map[string]string{"error": message})
-}
-
-var startTime = time.Now()
+// --- MAIN ---
 
 func main() {
-	dc := NewDNSChecker()
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	slog.SetDefault(logger)
+
+	cfg := loadConfig()
+	dc := NewDNSChecker(cfg)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go dc.cleanupLimiters(ctx)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/lookup", apiHandler(dc))
-	mux.HandleFunc("/health", healthHandler)
+	mux.HandleFunc("/api/lookup", dc.middleware(dc.handleLookup))
+	mux.Handle("/metrics", promhttp.Handler())
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]string{"status": "healthy"})
+	})
+
+	// HTML UI
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
@@ -802,30 +688,37 @@ func main() {
 	})
 
 	server := &http.Server{
-		Addr:         ":" + dc.config.Port,
+		Addr:         ":" + cfg.Port,
 		Handler:      mux,
-		ReadTimeout:  dc.config.ReadTimeout,
-		WriteTimeout: dc.config.WriteTimeout,
-		IdleTimeout:  dc.config.IdleTimeout,
+		ReadTimeout:  cfg.ReadTimeout,
+		WriteTimeout: cfg.WriteTimeout,
+		IdleTimeout:  cfg.IdleTimeout,
 	}
 
-	fmt.Printf("DNS Lookup API Server starting on port %s\n", dc.config.Port)
-	fmt.Printf("Available endpoints:\n")
-	fmt.Printf("  - GET /api/lookup?domain=example.com&resolver=cloudflare\n")
-	fmt.Printf("  - GET /api/lookup?domain=8.8.8.8&resolver=google (PTR lookup)\n")
-	fmt.Printf("  - GET /health\n")
-	fmt.Printf("  - GET / (documentation)\n")
-	fmt.Printf("\nSupported resolvers: google, cloudflare, opendns, quad9\n")
-	fmt.Printf("Rate limit: %v requests per second per IP\n", dc.config.RateLimit)
-	fmt.Printf("Features:\n")
-	fmt.Printf("  - Forward DNS lookups (A, AAAA, NS, MX, TXT, CNAME, SOA, SRV, CAA)\n")
-	fmt.Printf("  - Reverse DNS lookups (PTR)\n")
-	fmt.Printf("  - IP-based rate limiting\n")
-	fmt.Printf("  - Multiple DNS resolvers\n")
-	fmt.Printf("  - Concurrent DNS queries\n")
-	fmt.Printf("  - Fallback to standard library\n")
+	// 5. Graceful Shutdown
+	serverErrors := make(chan error, 1)
+	go func() {
+		slog.Info("Server starting", "port", cfg.Port)
+		serverErrors <- server.ListenAndServe()
+	}()
 
-	if err := server.ListenAndServe(); err != nil {
-		fmt.Printf("Server error: %v\n", err)
+	shutdown := make(chan os.Signal, 1)
+	signal.Notify(shutdown, os.Interrupt, syscall.SIGTERM)
+
+	select {
+	case err := <-serverErrors:
+		slog.Error("Server error", "error", err)
+	case <-shutdown:
+		slog.Info("Server shutting down...")
+		timeoutCtx, timeoutCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer timeoutCancel()
+
+		if err := server.Shutdown(timeoutCtx); err != nil {
+			slog.Error("Graceful shutdown failed", "error", err)
+			if err := server.Close(); err != nil {
+				slog.Error("Forced close failed", "error", err)
+			}
+		}
 	}
+	slog.Info("Server stopped")
 }
