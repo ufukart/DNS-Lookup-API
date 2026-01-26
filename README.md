@@ -29,9 +29,9 @@ Health check endpoint to verify service availability.
 /api/lookup?domain=8.8.8.8&resolver=google
 
 ### Demo Page
-[DNS Lookup API Web Page](https://dns.zumbo.net/)  
-[DNS Lookup API JSON Result](https://dns.zumbo.net/api/lookup?domain=example.com&resolver=cloudflare)  
-
+[DNS Lookup API Web Page](http://dns.zumbo.net:3000/)  
+[DNS Lookup API JSON Result](http://dns.zumbo.net:3000/api/lookup?domain=example.com&resolver=cloudflare)  
+[PTR (Reverse DNS) Lookup API JSON Result](http://dns.zumbo.net:3000/api/lookup?domain=8.8.8.8&resolver=cloudflare)  
 ---
 
 ## 📄 Supported Record Types
