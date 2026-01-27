@@ -645,44 +645,306 @@ func main() {
 		}
 		w.Header().Set("Content-Type", "text/html")
 		w.Write([]byte(`<!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>DNS Lookup API</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DNS Lookup API - Documentation</title>
     <style>
-        body { font-family: Arial, sans-serif; margin: 40px; }
-        .endpoint { background: #f5f5f5; padding: 10px; margin: 10px 0; border-radius: 5px; }
-        .example { background: #e8f4f8; padding: 10px; margin: 10px 0; border-radius: 5px; }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+            color: #333;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        header {
+            text-align: center;
+            color: white;
+            margin-bottom: 50px;
+            padding: 40px 20px;
+        }
+
+        h1 {
+            font-size: 3rem;
+            margin-bottom: 15px;
+            font-weight: 700;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
+        }
+
+        .subtitle {
+            font-size: 1.2rem;
+            opacity: 0.95;
+            font-weight: 300;
+        }
+
+        .card {
+            background: white;
+            border-radius: 15px;
+            padding: 30px;
+            margin-bottom: 30px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+
+        .card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 15px 40px rgba(0,0,0,0.25);
+        }
+
+        h2 {
+            color: #667eea;
+            margin-bottom: 20px;
+            font-size: 1.8rem;
+            border-bottom: 3px solid #667eea;
+            padding-bottom: 10px;
+        }
+
+        .endpoint {
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+            padding: 20px;
+            margin: 15px 0;
+            border-radius: 10px;
+            border-left: 5px solid #667eea;
+            transition: all 0.3s ease;
+        }
+
+        .endpoint:hover {
+            border-left-width: 8px;
+            padding-left: 22px;
+        }
+
+        .endpoint strong {
+            color: #667eea;
+            font-size: 1.1rem;
+            display: block;
+            margin-bottom: 8px;
+        }
+
+        .endpoint-method {
+            display: inline-block;
+            background: #667eea;
+            color: white;
+            padding: 4px 12px;
+            border-radius: 5px;
+            font-size: 0.9rem;
+            margin-right: 10px;
+            font-weight: bold;
+        }
+
+        .example {
+            background: linear-gradient(135deg, #e0f7fa 0%, #b2ebf2 100%);
+            padding: 20px;
+            margin: 15px 0;
+            border-radius: 10px;
+            border-left: 5px solid #00acc1;
+        }
+
+        .example strong {
+            color: #00838f;
+            display: block;
+            margin-bottom: 10px;
+            font-size: 1.05rem;
+        }
+
+        code {
+            background: rgba(0,0,0,0.1);
+            padding: 8px 12px;
+            border-radius: 5px;
+            font-family: 'Courier New', monospace;
+            display: inline-block;
+            margin-top: 5px;
+            color: #1a237e;
+            font-size: 0.95rem;
+            word-break: break-all;
+        }
+
+        .badge-container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-top: 15px;
+        }
+
+        .badge {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 0.9rem;
+            display: inline-block;
+            box-shadow: 0 3px 10px rgba(102, 126, 234, 0.3);
+            transition: transform 0.2s ease;
+        }
+
+        .badge:hover {
+            transform: scale(1.05);
+        }
+
+        .info-box {
+            background: linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%);
+            border-left: 5px solid #ff9800;
+            padding: 20px;
+            border-radius: 10px;
+            margin-top: 15px;
+        }
+
+        .info-box p {
+            color: #e65100;
+            font-weight: 500;
+            line-height: 1.6;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-top: 20px;
+        }
+
+        footer {
+            text-align: center;
+            color: white;
+            margin-top: 50px;
+            padding: 20px;
+            opacity: 0.9;
+        }
+
+        @media (max-width: 768px) {
+            h1 {
+                font-size: 2rem;
+            }
+
+            .subtitle {
+                font-size: 1rem;
+            }
+
+            .card {
+                padding: 20px;
+            }
+        }
+
+        .param {
+            color: #7c4dff;
+            font-weight: 600;
+        }
+
+        .optional {
+            color: #ff6b6b;
+            font-size: 0.85rem;
+            font-style: italic;
+        }
+
+        .required {
+            color: #51cf66;
+            font-size: 0.85rem;
+            font-style: italic;
+        }
     </style>
 </head>
 <body>
-    <h1>DNS Lookup API</h1>
-    <p>A comprehensive DNS lookup service with support for multiple record types and resolvers.</p>
-    
-    <h2>Endpoints</h2>
-    <div class="endpoint">
-        <strong>GET /api/lookup</strong><br>
-        Parameters: domain (required - domain name or IP address), resolver (optional: google, cloudflare, opendns, quad9)
+    <div class="container">
+        <header>
+            <h1>🌐 DNS Lookup API</h1>
+            <p class="subtitle">A comprehensive DNS lookup service with support for multiple record types and resolvers</p>
+        </header>
+
+        <div class="card">
+            <h2>📡 API Endpoints</h2>
+            
+            <div class="endpoint">
+                <strong><span class="endpoint-method">GET</span>/api/lookup</strong>
+                <p><span class="param">domain</span> <span class="required">(required)</span> - Domain name or IP address</p>
+                <p><span class="param">resolver</span> <span class="optional">(optional)</span> - Choose from: google, cloudflare, opendns, quad9</p>
+            </div>
+
+            <div class="endpoint">
+                <strong><span class="endpoint-method">GET</span>/health</strong>
+                <p>Health check endpoint - Monitor service availability</p>
+            </div>
+
+            <div class="endpoint">
+                <strong><span class="endpoint-method">GET</span>/metrics</strong>
+                <p>Prometheus metrics endpoint - Performance and usage statistics</p>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>💡 Example Usage</h2>
+            
+            <div class="example">
+                <strong>🔍 Domain lookup:</strong>
+                <code>/api/lookup?domain=example.com&resolver=cloudflare</code>
+            </div>
+
+            <div class="example">
+                <strong>🔄 PTR (reverse DNS) lookup:</strong>
+                <code>/api/lookup?domain=8.8.8.8&resolver=google</code>
+            </div>
+
+            <div class="example">
+                <strong>🎯 Simple query (default resolver):</strong>
+                <code>/api/lookup?domain=github.com</code>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>📋 Supported Record Types</h2>
+            <div class="badge-container">
+                <span class="badge">A</span>
+                <span class="badge">AAAA</span>
+                <span class="badge">NS</span>
+                <span class="badge">MX</span>
+                <span class="badge">TXT</span>
+                <span class="badge">CNAME</span>
+                <span class="badge">SOA</span>
+                <span class="badge">SRV</span>
+                <span class="badge">CAA</span>
+                <span class="badge">PTR</span>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>⚙️ Available DNS Resolvers</h2>
+            <div class="grid">
+                <div class="info-box" style="background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%); border-left-color: #4caf50;">
+                    <p style="color: #2e7d32;">🟢 <strong>Google DNS</strong> - 8.8.8.8</p>
+                </div>
+                <div class="info-box" style="background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%); border-left-color: #2196f3;">
+                    <p style="color: #1565c0;">🔵 <strong>Cloudflare</strong> - 1.1.1.1</p>
+                </div>
+                <div class="info-box" style="background: linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%); border-left-color: #ff9800;">
+                    <p style="color: #e65100;">🟠 <strong>OpenDNS</strong> - 208.67.222.222</p>
+                </div>
+                <div class="info-box" style="background: linear-gradient(135deg, #fce4ec 0%, #f8bbd0 100%); border-left-color: #e91e63;">
+                    <p style="color: #ad1457;">🔴 <strong>Quad9</strong> - 9.9.9.9</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>⚡ Rate Limiting</h2>
+            <div class="info-box">
+                <p>⏱️ Rate limiting is applied per IP address to ensure fair usage and optimal service performance for all users.</p>
+            </div>
+        </div>
+
+        <footer>
+            <p>Built with ❤️ for reliable DNS lookups</p>
+        </footer>
     </div>
-    <div class="endpoint">
-        <strong>GET /health</strong><br>
-        Health check endpoint
-    </div>
-    
-    <h2>Example Usage</h2>
-    <div class="example">
-        <strong>Domain lookup:</strong><br>
-        <code>/api/lookup?domain=example.com&resolver=cloudflare</code>
-    </div>
-    <div class="example">
-        <strong>PTR (reverse DNS) lookup:</strong><br>
-        <code>/api/lookup?domain=8.8.8.8&resolver=google</code>
-    </div>
-    
-    <h2>Supported Record Types</h2>
-    <p>A, AAAA, NS, MX, TXT, CNAME, SOA, SRV, CAA, PTR (reverse DNS)</p>
-    
-    <h2>Rate Limiting</h2>
-    <p>Rate limiting is applied per IP address to ensure fair usage.</p>
 </body>
 </html>`))
 	})
