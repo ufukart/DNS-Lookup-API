@@ -6,6 +6,12 @@ A comprehensive DNS lookup service with support for multiple record types and re
 
 ![dns-lookup-api](https://github.com/user-attachments/assets/63054937-f732-41e5-bb5a-222c27a6db85)
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Update Status](https://img.shields.io/badge/Status-Actively%20Maintained-green.svg)](https://github.com/ufukart/DNS-Lookup-API)
+[![Last Updated](https://img.shields.io/github/last-commit/ufukart/DNS-Lookup-API)](https://github.com/ufukart/DNS-Lookup-API/commits/main)
+![GitHub repo size](https://img.shields.io/github/repo-size/ufukart/DNS-Lookup-API)
+![Visitors](https://api.visitorbadge.io/api/visitors?path=https%3A%2F%2Fgithub.com%2Fufukart%2FDNS-Lookup-API%2F&label=HITS&countColor=%23263759&style=flat)
+[![Donate](https://img.shields.io/badge/Donate-PayPal-blue.svg)](https://www.paypal.com/donate/?business=53EHQKQ3T87J8&no_recurring=0&currency_code=USD)
 ---
 
 ## 🔌 Endpoints
