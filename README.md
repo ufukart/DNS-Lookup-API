@@ -4,6 +4,8 @@ A comprehensive DNS lookup service with support for multiple record types and re
 
 [![Donate](https://img.shields.io/badge/Donate-PayPal-blue.svg)](https://www.paypal.com/donate/?business=53EHQKQ3T87J8&no_recurring=0&currency_code=USD)
 
+![dns-lookup-api](https://github.com/user-attachments/assets/63054937-f732-41e5-bb5a-222c27a6db85)
+
 ---
 
 ## 🔌 Endpoints
@@ -29,9 +31,9 @@ Health check endpoint to verify service availability.
 /api/lookup?domain=8.8.8.8&resolver=google
 
 ### Demo Page
-[DNS Lookup API Web Page](https://dns.zumbo.net/)  
+[DNS Lookup API Web Page](https://dns.zumbo.net)  
 [DNS Lookup API JSON Result](https://dns.zumbo.net/api/lookup?domain=example.com&resolver=cloudflare)  
-
+[PTR (Reverse DNS) Lookup API JSON Result](https://dns.zumbo.net/api/lookup?domain=8.8.8.8&resolver=cloudflare)  
 ---
 
 ## 📄 Supported Record Types
