@@ -877,7 +877,7 @@ func main() {
             <div class="endpoint">
                 <strong><span class="endpoint-method">GET</span>/api/lookup</strong>
                 <p><span class="param">domain</span> <span class="required">(required)</span> - Domain name or IP address</p>
-                <p><span class="param">resolver</span> <span class="optional">(optional)</span> - Choose from: google, cloudflare, opendns, quad9</p>
+                <p><span class="param">resolver</span> <span class="optional">(optional)</span> - Choose from: google, cloudflare, opendns, quad9, adguard, dnswatch, comodo, cleanbrowsing, ultradns</p>
             </div>
 
             <div class="endpoint">
@@ -930,31 +930,31 @@ func main() {
             <h2>⚙️ Available DNS Resolvers</h2>
             <div class="grid">
                 <div class="info-box" style="background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%); border-left-color: #4caf50;">
-                    <p style="color: #2e7d32;">🟢 <strong>Google DNS</strong> - 8.8.8.8 - usage: &resolver=google</p>
+                    <p style="color: #2e7d32;">🟢 <strong>Google DNS</strong> - 8.8.8.8 </p>
                 </div>
                 <div class="info-box" style="background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%); border-left-color: #2196f3;">
-                    <p style="color: #1565c0;">🔵 <strong>Cloudflare</strong> - 1.1.1.1 - usage: &resolver=cloudflare</p>
+                    <p style="color: #1565c0;">🔵 <strong>Cloudflare</strong> - 1.1.1.1</p>
                 </div>
                 <div class="info-box" style="background: linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%); border-left-color: #ff9800;">
-                    <p style="color: #e65100;">🟠 <strong>OpenDNS</strong> - 208.67.222.222 - usage: &resolver=opendns</p>
+                    <p style="color: #e65100;">🟠 <strong>OpenDNS</strong> - 208.67.222.222</p>
                 </div>
                 <div class="info-box" style="background: linear-gradient(135deg, #fce4ec 0%, #f8bbd0 100%); border-left-color: #e91e63;">
-                    <p style="color: #ad1457;">🔴 <strong>Quad9</strong> - 9.9.9.9 - usage: &resolver=quad9</p>
+                    <p style="color: #ad1457;">🔴 <strong>Quad9</strong> - 9.9.9.9</p>
                 </div>
 				<div class="info-box" style="background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%); border-left-color: #4caf50;">
-                    <p style="color: #2e7d32;">🟢 <strong>AdGuard DNS</strong> - 94.140.14.14 - usage: &resolver=adguard</p>
+                    <p style="color: #2e7d32;">🟢 <strong>AdGuard DNS</strong> - 94.140.14.14</p>
                 </div>
                 <div class="info-box" style="background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%); border-left-color: #2196f3;">
-                    <p style="color: #1565c0;">🔵 <strong>DnsWatch</strong> - 84.200.69.80 - usage: &resolver=dnswatch</p>
+                    <p style="color: #1565c0;">🔵 <strong>DnsWatch</strong> - 84.200.69.80</p>
                 </div>
                 <div class="info-box" style="background: linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%); border-left-color: #ff9800;">
-                    <p style="color: #e65100;">🟠 <strong>Comodo</strong> - 8.26.56.26 - usage: &resolver=comodo</p>
+                    <p style="color: #e65100;">🟠 <strong>Comodo</strong> - 8.26.56.26</p>
                 </div>
                 <div class="info-box" style="background: linear-gradient(135deg, #fce4ec 0%, #f8bbd0 100%); border-left-color: #e91e63;">
-                    <p style="color: #ad1457;">🔴 <strong>CleanBrowsing</strong> - 185.228.168.9 - usage: &resolver=cleanbrowsing</p>
+                    <p style="color: #ad1457;">🔴 <strong>CleanBrowsing</strong> - 185.228.168.9</p>
                 </div>
                 <div class="info-box" style="background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%); border-left-color: #4caf50;">
-                    <p style="color: #2e7d32;">🟢 <strong>UltraDns</strong> - 64.6.64.6 - usage: &resolver=ultradns</p>
+                    <p style="color: #2e7d32;">🟢 <strong>UltraDns</strong> - 64.6.64.6</p>
                 </div>
             </div>
         </div>
