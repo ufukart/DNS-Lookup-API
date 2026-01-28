@@ -277,8 +277,18 @@ func (dc *DNSChecker) getResolverIP(resolver string) string {
 		return "208.67.222.222"
 	case "quad9":
 		return "9.9.9.9"
+	case "adguard":
+		return "94.140.14.14"
+	case "dnswatch":
+		return "84.200.69.80"
+	case "comodo":
+		return "8.26.56.26"
+	case "cleanbrowsing":
+		return "185.228.168.9"
+	case "ultradns":
+		return "64.6.64.6"
 	default:
-		return "1.1.1.1"
+		return "8.8.8.8"
 	}
 }
 
@@ -920,16 +930,31 @@ func main() {
             <h2>⚙️ Available DNS Resolvers</h2>
             <div class="grid">
                 <div class="info-box" style="background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%); border-left-color: #4caf50;">
-                    <p style="color: #2e7d32;">🟢 <strong>Google DNS</strong> - 8.8.8.8</p>
+                    <p style="color: #2e7d32;">🟢 <strong>Google DNS</strong> - 8.8.8.8 - usage: &resolver=google</p>
                 </div>
                 <div class="info-box" style="background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%); border-left-color: #2196f3;">
-                    <p style="color: #1565c0;">🔵 <strong>Cloudflare</strong> - 1.1.1.1</p>
+                    <p style="color: #1565c0;">🔵 <strong>Cloudflare</strong> - 1.1.1.1 - usage: &resolver=cloudflare</p>
                 </div>
                 <div class="info-box" style="background: linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%); border-left-color: #ff9800;">
-                    <p style="color: #e65100;">🟠 <strong>OpenDNS</strong> - 208.67.222.222</p>
+                    <p style="color: #e65100;">🟠 <strong>OpenDNS</strong> - 208.67.222.222 - usage: &resolver=opendns</p>
                 </div>
                 <div class="info-box" style="background: linear-gradient(135deg, #fce4ec 0%, #f8bbd0 100%); border-left-color: #e91e63;">
-                    <p style="color: #ad1457;">🔴 <strong>Quad9</strong> - 9.9.9.9</p>
+                    <p style="color: #ad1457;">🔴 <strong>Quad9</strong> - 9.9.9.9 - usage: &resolver=quad9</p>
+                </div>
+				<div class="info-box" style="background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%); border-left-color: #4caf50;">
+                    <p style="color: #2e7d32;">🟢 <strong>AdGuard DNS</strong> - 94.140.14.14 - usage: &resolver=adguard</p>
+                </div>
+                <div class="info-box" style="background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%); border-left-color: #2196f3;">
+                    <p style="color: #1565c0;">🔵 <strong>DnsWatch</strong> - 84.200.69.80 - usage: &resolver=dnswatch</p>
+                </div>
+                <div class="info-box" style="background: linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%); border-left-color: #ff9800;">
+                    <p style="color: #e65100;">🟠 <strong>Comodo</strong> - 8.26.56.26 - usage: &resolver=comodo</p>
+                </div>
+                <div class="info-box" style="background: linear-gradient(135deg, #fce4ec 0%, #f8bbd0 100%); border-left-color: #e91e63;">
+                    <p style="color: #ad1457;">🔴 <strong>CleanBrowsing</strong> - 185.228.168.9 - usage: &resolver=cleanbrowsing</p>
+                </div>
+                <div class="info-box" style="background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%); border-left-color: #4caf50;">
+                    <p style="color: #2e7d32;">🟢 <strong>UltraDns</strong> - 64.6.64.6 - usage: &resolver=ultradns</p>
                 </div>
             </div>
         </div>
