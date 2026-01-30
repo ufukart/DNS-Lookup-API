@@ -26,6 +26,9 @@ Retrieve DNS records for a domain or IP address.
 ### `GET /health`
 Health check endpoint to verify service availability.
 
+### `GET /metrics`
+Prometheus metrics endpoint - Performance and usage statistics
+
 ---
 
 ## 🧪 Example Usage
