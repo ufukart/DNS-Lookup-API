@@ -21,10 +21,13 @@ Retrieve DNS records for a domain or IP address.
 
 - **Parameters:**
   - `domain` (required): Domain name or IP address (e.g. `example.com` or `8.8.8.8`)
-  - `resolver` (optional): Choose from `google`, `cloudflare`, `opendns`, or `quad9`
+  - `resolver` (optional): Choose from `google`, `cloudflare`, `opendns`, `quad9`, `adguard`, `dnswatch`, `comodo`, `cleanbrowsing`, `ultradns`
 
 ### `GET /health`
 Health check endpoint to verify service availability.
+
+### `GET /metrics`
+Prometheus metrics endpoint - Performance and usage statistics
 
 ---
 
