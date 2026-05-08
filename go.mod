@@ -1,6 +1,6 @@
 module DNS-Lookup-API
 
-go 1.26.2
+go 1.26.3
 
 require (
 	github.com/miekg/dns v1.1.72 // direct
